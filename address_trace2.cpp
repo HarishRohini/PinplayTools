@@ -54,7 +54,7 @@ KNOB<BOOL> KnobPinPlayReplayer(KNOB_MODE_WRITEONCE, "pintool", "replay", "0",
 /* Global Variables */
 /* ===================================================================== */
 
-std::ofstream TraceFile;
+std::ofstream TraceFile, TraceFile2;
 ofstream OutFile;
 /* ===================================================================== */
 /* Commandline Switches */
@@ -62,6 +62,8 @@ ofstream OutFile;
 
 KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE, "pintool",
     "o", "malloctrace.out", "specify trace file name");
+KNOB<string> KnobOutputFile2(KNOB_MODE_WRITEONCE, "pintool",
+    "o2", "assembly_trace.out", "specify trace file name");
 
 /* ===================================================================== */
 
@@ -80,16 +82,38 @@ stringstream strm, strm2, strm3, strm4, strm5;
 ADDRINT free_size;
 VOID* free_end_address=(void *)0x7f5f8eac62bf;//0x7f5f8eac62bf
 VOID* free_start_address=(void *)0x7f5f8e702000;//0x7f5f8e702000
+UINT64 region_start_count = 12270006257;
+UINT64 region_end_count = 12300006261;
 //ADDRINT free_end_address=0x7f5f8eac62bf;
 //ADDRINT free_start_address=0x7f5f8e702000;
 string free_ip;
 string free_name, alloc_name;
+map<long, string> inst_map;
+bool in_range=false;
+char str2[10];
 // This function is called before every instruction is executed
-VOID docount() { icount++; }
+VOID docount() 
+{ 
+    icount++;
+    if((region_start_count <= icount) && (icount <= region_end_count))
+	in_range = true;
+    else if(icount > region_end_count)
+    {
+	TraceFile.close();
+        //OutFile.close();
+        for (std::map<long, string>::iterator it=inst_map.begin(); it!=inst_map.end(); ++it)
+	    TraceFile2 << (void *)it->first <<" : "<< it->second.c_str()<<endl;
+        TraceFile2.close();
+        exit(0);
+    }
+    else {
+    }
+}
 
 VOID RecordMemRead(VOID * ip, VOID * addr)
 {
     //fprintf(trace,"%p: R %p\n", ip, addr);
+    if(in_range){
     if(!free_flag)
     {
 	if((free_start_address <= ip) && (ip <= free_end_address))
@@ -113,12 +137,14 @@ VOID RecordMemRead(VOID * ip, VOID * addr)
 	strm.str("");
 	strm2.str("");
     }
+    }
 }
 
 // Print a memory write record
 VOID RecordMemWrite(VOID * ip, VOID * addr)
 {
     //fprintf(trace,"%p: W %p\n", ip, addr);
+    if(in_range) {
     if(!free_flag)
     {
 	if((free_start_address <= ip) && (ip <= free_end_address))
@@ -142,6 +168,7 @@ VOID RecordMemWrite(VOID * ip, VOID * addr)
         strm.str("");
 	strm2.str("");
     }
+    }
 }
 
 VOID Arg1Before(CHAR * name, ADDRINT size)
@@ -156,19 +183,25 @@ VOID Arg1Before(CHAR * name, ADDRINT size)
     }
 
 //cout<<name<<" : "<<size<<endl;
-    if(strcmp(name,"free")==0){
+    if(strcmp(name,"free")==0 && in_range){
     	free_size = size;
 	free_flag = 0;
 	strm3 << (void *)size;
         free_name = "free("+strm3.str()+")";
-        cout<<"free("<<size<<")"<<endl;
+        //cout<<"free("<<size<<")"<<endl;
 	strm3.str("");
+    }
+    else if(strcmp(name,"free")==0 && !in_range) {
+	TraceFile<<"free("<<size<<")"<<endl;
+    }
+    else{
     }
 }
 
 VOID MallocAfter(ADDRINT ret)
 {
     TraceFile << alloc_name << ret << endl;
+    if(in_range)
     TraceFile<< malloc_rw;
     malloc_flag = 1;
     malloc_rw = "";
@@ -191,6 +224,7 @@ VOID ReallocAfter(ADDRINT ret)
 {
 	
    TraceFile <<alloc_name<< ret<<"\n";
+   if(in_range)
    TraceFile<<malloc_rw;
    realloc_flag = 1;
    malloc_rw = "";
@@ -214,12 +248,11 @@ VOID CallocAfter(ADDRINT ret)
 {
 	
    TraceFile << alloc_name<< ret<<"\n";
+   if(in_range)
    TraceFile<<malloc_rw;
    calloc_flag = 1;
    malloc_rw = "";
    alloc_name="";
-
-   
 }
 
 VOID Routine(RTN rtn, VOID *v)
@@ -328,6 +361,19 @@ VOID Instruction(INS ins, VOID *v)
     TraceFile<<INS_Address(ins)<<" : "<<INS_Disassemble(ins)<<" : "<<RTN_Name(mallocRtn)<<endl;
     }
 */
+    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount, IARG_END);
+
+    string inst = INS_Disassemble(ins);
+
+    if (inst.at(0)=='r'&&inst.at(1)=='e'&&inst.at(2)=='p'&&inst.at(3)==' ') {
+	if (inst_map.find(INS_Address(ins)) == inst_map.end()) {
+		sprintf( str2, "%u", INS_MemoryOperandCount(ins));
+	    	inst_map[INS_Address(ins)] = inst + " : " + str2 ;
+	}
+	else {
+	}
+    }
+
     UINT32 memOperands = INS_MemoryOperandCount(ins);
 
     //cout<<INS_Address(ins)<<" : "<<INS_Disassemble(ins)<<"\n";
@@ -337,6 +383,13 @@ VOID Instruction(INS ins, VOID *v)
     {
         if (INS_MemoryOperandIsRead(ins, memOp))
         {
+	    if (inst_map.find(INS_Address(ins)) == inst_map.end()) {
+		sprintf( str2, "%u", memOperands);
+	    	inst_map[INS_Address(ins)] = INS_Disassemble(ins) + " : " + str2;
+	    }
+	    else {
+	    }
+
             //TraceFile<<INS_Address(ins)<<" : "<<RTN_Name(INS_Rtn(ins))<<endl;
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMemRead,
@@ -349,6 +402,12 @@ VOID Instruction(INS ins, VOID *v)
         // In that case we instrument it once for read and once for write.
         if (INS_MemoryOperandIsWritten(ins, memOp))
         {
+	    if (inst_map.find(INS_Address(ins)) == inst_map.end()) {
+		sprintf( str2, "%u", memOperands);
+	    	inst_map[INS_Address(ins)] = INS_Disassemble(ins) + " : " + str2;
+	    }
+	    else {
+	    }
 	    //TraceFile<<INS_Address(ins)<<" : "<<RTN_Name(INS_Rtn(ins))<<endl;
             INS_InsertPredicatedCall(
                 ins, IPOINT_BEFORE, (AFUNPTR)RecordMemWrite,
@@ -357,7 +416,6 @@ VOID Instruction(INS ins, VOID *v)
                 IARG_END);
         }
     }
-
 
 }
  
@@ -375,6 +433,9 @@ VOID Fini(INT32 code, VOID *v)
 {
     TraceFile.close();
     //OutFile.close();
+    for (std::map<long, string>::iterator it=inst_map.begin(); it!=inst_map.end(); ++it)
+	TraceFile2 << (void *)it->first <<" : "<< it->second.c_str()<<endl;
+    TraceFile2.close();
 }
 
 /* ===================================================================== */
@@ -407,8 +468,11 @@ int main(int argc, char *argv[])
     // Write to a file since cout and cerr maybe closed by the application
     //OutFile.open(KnobOutputFile.Value().c_str());
     TraceFile.open(KnobOutputFile.Value().c_str());
+    TraceFile2.open(KnobOutputFile2.Value().c_str());
     TraceFile << hex;
+    TraceFile2 << hex;
     TraceFile.setf(ios::showbase);
+    TraceFile2.setf(ios::showbase);
     cout << hex;
     cout.setf(ios::showbase);
     // Register Image to be called to instrument functions.
