@@ -123,7 +123,7 @@ int main(int argc, char *argv[])
     IMG_AddInstrumentFunction(Image, 0);
     PIN_AddFiniFunction(Fini, 0);
 
-    // Never returns
+    // Never returns.
     PIN_StartProgram();
     
     return 0;
